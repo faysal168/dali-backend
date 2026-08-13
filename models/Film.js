@@ -11,7 +11,13 @@ const filmSchema = new mongoose.Schema({
   desc: { type: String, default: '' },
   new: { type: Boolean, default: false },
 }, {
-  timestamps: true
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
+
+filmSchema.virtual('id').get(function() {
+  return this._id.toHexString();
 });
 
 module.exports = mongoose.model('Film', filmSchema);
