@@ -3,11 +3,14 @@ const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
-const { v4: uuidv4 } = require('uuid');
+const connectDB = require('./config/db');
 const filmRoutes = require('./routes/films');
 const authRoutes = require('./routes/auth');
 const { authMiddleware, adminMiddleware } = require('./middleware/auth');
 const { posterStorage, videoStorage } = require('./config/cloudinary');
+
+// Connect to MongoDB
+connectDB();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -41,35 +44,6 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // ============================================
 const posterUpload = multer({ storage: posterStorage });
 const videoUpload = multer({ storage: videoStorage });
-
-// Fallback disk storage for local uploads (if Cloudinary fails)
-const diskStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const folder = file.fieldname === 'poster' ? 'posters' : 'videos';
-    const destPath = path.join(__dirname, 'uploads', folder);
-    if (!fs.existsSync(destPath)) {
-      fs.mkdirSync(destPath, { recursive: true });
-    }
-    cb(null, destPath);
-  },
-  filename: (req, file, cb) => {
-    cb(null, uuidv4() + path.extname(file.originalname));
-  }
-});
-
-const fallbackUpload = multer({
-  storage: diskStorage,
-  limits: { fileSize: 500 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (file.fieldname === 'poster' && !file.mimetype.startsWith('image/')) {
-      return cb(new Error('Only image files for posters'));
-    }
-    if (file.fieldname === 'video' && !file.mimetype.startsWith('video/')) {
-      return cb(new Error('Only video files'));
-    }
-    cb(null, true);
-  }
-});
 
 // Multer error wrapper
 function handleUpload(field, uploadInstance) {
@@ -120,8 +94,7 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🎬 DALI Backend running on http://localhost:${PORT}`);
-  console.log(`📁 Uploads: ${path.join(__dirname, 'uploads')}`);
-  console.log(`🗄️  Database: ${path.join(__dirname, 'data')}`);
-  console.log(`☁️  Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME || 'NOT CONFIGURED'}`);
+  console.log(`DALI Backend running on http://localhost:${PORT}`);
+  console.log(`Uploads: ${path.join(__dirname, 'uploads')}`);
+  console.log(`Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME || 'NOT CONFIGURED'}`);
 });

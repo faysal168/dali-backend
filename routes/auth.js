@@ -3,7 +3,7 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
-const { loadUsersDB, saveUsersDB } = require('../database');
+const User = require('../models/User');
 const { JWT_SECRET } = require('../middleware/auth');
 
 // POST /api/auth/register
@@ -17,29 +17,29 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Password must be at least 6 characters' });
     }
 
-    const db = loadUsersDB();
-    if (db.users.find(u => u.email === email)) {
+    const existingEmail = await User.findOne({ email });
+    if (existingEmail) {
       return res.status(400).json({ success: false, error: 'Email already registered' });
     }
-    if (db.users.find(u => u.username === username)) {
+
+    const existingUsername = await User.findOne({ username });
+    if (existingUsername) {
       return res.status(400).json({ success: false, error: 'Username already taken' });
     }
 
+    // Check if this is the first user (make them admin)
+    const userCount = await User.countDocuments();
     const hashedPassword = await bcrypt.hash(password, 10);
-    const user = {
-      id: uuidv4(),
+
+    const user = await User.create({
       username,
       email,
       password_hash: hashedPassword,
-      role: db.users.length === 0 ? 'admin' : 'user', // First user is admin
-      created_at: new Date().toISOString()
-    };
-
-    db.users.push(user);
-    saveUsersDB(db);
+      role: userCount === 0 ? 'admin' : 'user',
+    });
 
     const token = jwt.sign(
-      { id: user.id, username: user.username, email: user.email, role: user.role },
+      { id: user._id, username: user.username, email: user.email, role: user.role },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -48,7 +48,7 @@ router.post('/register', async (req, res) => {
       success: true,
       message: 'User registered',
       token,
-      user: { id: user.id, username: user.username, email: user.email, role: user.role }
+      user: { id: user._id, username: user.username, email: user.email, role: user.role }
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -63,8 +63,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email and password required' });
     }
 
-    const db = loadUsersDB();
-    const user = db.users.find(u => u.email === email);
+    const user = await User.findOne({ email });
     if (!user) {
       return res.status(401).json({ success: false, error: 'Invalid email or password' });
     }
@@ -75,7 +74,7 @@ router.post('/login', async (req, res) => {
     }
 
     const token = jwt.sign(
-      { id: user.id, username: user.username, email: user.email, role: user.role },
+      { id: user._id, username: user.username, email: user.email, role: user.role },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -84,14 +83,14 @@ router.post('/login', async (req, res) => {
       success: true,
       message: 'Login successful',
       token,
-      user: { id: user.id, username: user.username, email: user.email, role: user.role }
+      user: { id: user._id, username: user.username, email: user.email, role: user.role }
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// GET /api/auth/me — get current user
+// GET /api/auth/me
 router.get('/me', require('../middleware/auth').authMiddleware, (req, res) => {
   res.json({ success: true, user: req.user });
 });
