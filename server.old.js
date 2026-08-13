@@ -1,30 +1,14 @@
 const express = require('express');
 const cors = require('cors');
-const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const filmRoutes = require('./routes/films');
 const authRoutes = require('./routes/auth');
 const { authMiddleware, adminMiddleware } = require('./middleware/auth');
-const { posterStorage, videoStorage } = require('./config/cloudinary');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-
-// ============================================
-// CREATE UPLOAD DIRECTORIES ON STARTUP (fallback)
-// ============================================
-const uploadsDir = path.join(__dirname, 'uploads');
-const postersDir = path.join(__dirname, 'uploads', 'posters');
-const videosDir = path.join(__dirname, 'uploads', 'videos');
-
-[uploadsDir, postersDir, videosDir].forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-    console.log('Created directory:', dir);
-  }
-});
 
 const corsOptions = {
   origin: process.env.FRONTEND_URL || 'http://localhost:3000',
@@ -36,29 +20,19 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// ============================================
-// CLOUDINARY MULTER CONFIG
-// ============================================
-const posterUpload = multer({ storage: posterStorage });
-const videoUpload = multer({ storage: videoStorage });
-
-// Fallback disk storage for local uploads (if Cloudinary fails)
-const diskStorage = multer.diskStorage({
+// Multer config
+const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const folder = file.fieldname === 'poster' ? 'posters' : 'videos';
-    const destPath = path.join(__dirname, 'uploads', folder);
-    if (!fs.existsSync(destPath)) {
-      fs.mkdirSync(destPath, { recursive: true });
-    }
-    cb(null, destPath);
+    cb(null, path.join(__dirname, 'uploads', folder));
   },
   filename: (req, file, cb) => {
     cb(null, uuidv4() + path.extname(file.originalname));
   }
 });
 
-const fallbackUpload = multer({
-  storage: diskStorage,
+const upload = multer({
+  storage,
   limits: { fileSize: 500 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (file.fieldname === 'poster' && !file.mimetype.startsWith('image/')) {
@@ -72,9 +46,9 @@ const fallbackUpload = multer({
 });
 
 // Multer error wrapper
-function handleUpload(field, uploadInstance) {
+function handleUpload(field) {
   return (req, res, next) => {
-    uploadInstance.single(field)(req, res, (err) => {
+    upload.single(field)(req, res, (err) => {
       if (err instanceof multer.MulterError) {
         if (err.code === 'LIMIT_FILE_SIZE') {
           return res.status(413).json({ success: false, error: 'File too large. Max 500MB.' });
@@ -89,22 +63,18 @@ function handleUpload(field, uploadInstance) {
   };
 }
 
-// ============================================
-// CLOUDINARY UPLOAD ENDPOINTS
-// ============================================
-app.post('/api/upload/poster', authMiddleware, adminMiddleware, handleUpload('poster', posterUpload), (req, res) => {
+// Upload endpoints - protected
+app.post('/api/upload/poster', authMiddleware, adminMiddleware, handleUpload('poster'), (req, res) => {
   if (!req.file) return res.status(400).json({ success: false, error: 'No file uploaded' });
-  res.json({ success: true, url: req.file.path });
+  res.json({ success: true, url: `/uploads/posters/${req.file.filename}` });
 });
 
-app.post('/api/upload/video', authMiddleware, adminMiddleware, handleUpload('video', videoUpload), (req, res) => {
+app.post('/api/upload/video', authMiddleware, adminMiddleware, handleUpload('video'), (req, res) => {
   if (!req.file) return res.status(400).json({ success: false, error: 'No file uploaded' });
-  res.json({ success: true, url: req.file.path });
+  res.json({ success: true, url: `/uploads/videos/${req.file.filename}` });
 });
 
-// ============================================
-// ROUTES
-// ============================================
+// Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/films', filmRoutes);
 
@@ -123,5 +93,4 @@ app.listen(PORT, () => {
   console.log(`🎬 DALI Backend running on http://localhost:${PORT}`);
   console.log(`📁 Uploads: ${path.join(__dirname, 'uploads')}`);
   console.log(`🗄️  Database: ${path.join(__dirname, 'data')}`);
-  console.log(`☁️  Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME || 'NOT CONFIGURED'}`);
 });
