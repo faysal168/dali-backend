@@ -19,18 +19,33 @@ router.post('/register', async (req, res) => {
     }
 
     const existingUser = await User.findOne({ email });
-    if (existingUser) {
+
+    // If user exists but has no password (corrupted migration), allow re-registration
+    if (existingUser && existingUser.password) {
       return res.status(400).json({ success: false, error: 'Email already registered' });
     }
 
-    const userCount = await User.countDocuments();
-    const assignedRole = userCount === 0 ? 'admin' : (role || 'viewer');
+    let user;
+    if (existingUser && !existingUser.password) {
+      // Re-register: update the corrupted user
+      existingUser.name = name;
+      existingUser.password = password;
+      existingUser.role = role || 'viewer';
+      await existingUser.save();
+      user = existingUser;
+    } else {
+      const userCount = await User.countDocuments();
+      const assignedRole = userCount === 0 ? 'admin' : (role || 'viewer');
+      user = new User({ name, email, password, role: assignedRole });
+      await user.save();
+    }
 
-    const user = new User({ name, email, password, role: assignedRole });
-    await user.save();
-
-    if (assignedRole === 'filmmaker') {
-      await FilmmakerProfile.create({ user: user._id });
+    if (user.role === 'filmmaker') {
+      await FilmmakerProfile.findOneAndUpdate(
+        { user: user._id },
+        { user: user._id },
+        { upsert: true, new: true }
+      );
     }
 
     const token = jwt.sign(
