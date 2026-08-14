@@ -44,6 +44,7 @@ router.post('/register', async (req, res) => {
       user: { id: user._id, name: user.name, email: user.email, role: user.role }
     });
   } catch (err) {
+    console.error('Register error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -56,10 +57,18 @@ router.post('/login', async (req, res) => {
     }
 
     const user = await User.findOne({ email });
-    if (!user) return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    }
+
+    if (!user.password) {
+      return res.status(401).json({ success: false, error: 'Account password missing. Please sign up again.' });
+    }
 
     const valid = await user.comparePassword(password);
-    if (!valid) return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    if (!valid) {
+      return res.status(401).json({ success: false, error: 'Invalid email or password' });
+    }
 
     const token = jwt.sign(
       { id: user._id, email: user.email, role: user.role },
@@ -72,6 +81,7 @@ router.post('/login', async (req, res) => {
       user: { id: user._id, name: user.name, email: user.email, role: user.role }
     });
   } catch (err) {
+    console.error('Login error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
