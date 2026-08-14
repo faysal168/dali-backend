@@ -1,12 +1,9 @@
 {
   "name": "dali-backend",
-  "version": "1.0.0",
-  "description": "DALI Film Streaming Backend",
+  "version": "2.0.0",
+  "description": "DALI Film Streaming Platform",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
-  },
+  "scripts": { "start": "node server.js", "dev": "nodemon server.js" },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cloudinary": "^1.41.0",
@@ -17,8 +14,5 @@
     "multer": "^1.4.5-lts.1",
     "multer-storage-cloudinary": "^4.0.0",
     "uuid": "^9.0.0"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.1"
   }
 }
