@@ -4,9 +4,22 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../models/User');
 const FilmmakerProfile = require('../models/FilmmakerProfile');
-const { auth } = require('../middleware/auth');
 
 const router = express.Router();
+
+// Inline auth middleware (no external dependency issues)
+const auth = async (req, res, next) => {
+  try {
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+    if (!token) return res.status(401).json({ message: 'No token, authorization denied' });
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (error) {
+    res.status(401).json({ message: 'Token is not valid' });
+  }
+};
 
 // Register (handles corrupted account re-registration)
 router.post('/register', async (req, res) => {
@@ -184,7 +197,7 @@ router.post('/forgot-password', async (req, res) => {
 
     const resetToken = crypto.randomBytes(32).toString('hex');
     user.resetPasswordToken = resetToken;
-    user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
+    user.resetPasswordExpires = Date.now() + 3600000;
     await user.save();
 
     res.json({ message: 'Password reset initiated', token: resetToken });
