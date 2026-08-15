@@ -37,6 +37,7 @@ app.use('/api/filmmaker', require('./routes/filmmaker'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/reports', require('./routes/reports'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/analytics', require('./routes/analytics'));
 
 // Health
 app.get('/api/health', (req, res) => {

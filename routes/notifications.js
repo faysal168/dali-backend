@@ -21,4 +21,13 @@ router.put('/:id/read', authMiddleware, async (req, res) => {
   }
 });
 
+router.put('/all/read', authMiddleware, async (req, res) => {
+  try {
+    await Notification.updateMany({ user: req.user.id, read: false }, { read: true });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

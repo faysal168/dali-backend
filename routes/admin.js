@@ -3,8 +3,14 @@ const router = express.Router();
 const Film = require('../models/Film');
 const User = require('../models/User');
 const Report = require('../models/Report');
+const Notification = require('../models/Notification');
 const FilmmakerProfile = require('../models/FilmmakerProfile');
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
+
+// Helper to create notification
+async function notifyUser(userId, type, message, link = '') {
+  await Notification.create({ user: userId, type, message, link });
+}
 
 // GET /api/admin/overview
 router.get('/overview', authMiddleware, adminMiddleware, async (req, res) => {
@@ -41,8 +47,20 @@ router.get('/pending-films', authMiddleware, adminMiddleware, async (req, res) =
 router.put('/films/:id/status', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { status, statusMessage } = req.body;
-    const film = await Film.findByIdAndUpdate(req.params.id, { status, statusMessage }, { new: true });
+    const film = await Film.findByIdAndUpdate(req.params.id, { status, statusMessage }, { new: true }).populate('filmmaker', '_id');
     if (!film) return res.status(404).json({ success: false, error: 'Film not found' });
+
+    // Notify filmmaker
+    const messages = {
+      published: `Your film "${film.title}" has been approved and published!`,
+      approved: `Your film "${film.title}" has been approved!`,
+      rejected: `Your film "${film.title}" was rejected.`,
+      changes_requested: `Changes requested for "${film.title}".`
+    };
+    if (messages[status] && film.filmmaker) {
+      await notifyUser(film.filmmaker._id, 'film_status', messages[status], `/film/${film._id}`);
+    }
+
     res.json({ success: true, film });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -67,6 +85,7 @@ router.put('/users/:id/role', authMiddleware, adminMiddleware, async (req, res) 
     if (role === 'filmmaker') {
       await FilmmakerProfile.findOneAndUpdate({ user: req.params.id }, {}, { upsert: true, new: true });
     }
+    await notifyUser(req.params.id, 'role_change', `Your role has been updated to ${role}.`);
     res.json({ success: true, user });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
