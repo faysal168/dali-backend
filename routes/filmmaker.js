@@ -1,59 +1,143 @@
 const express = require('express');
-const router = express.Router();
-const FilmmakerProfile = require('../models/FilmmakerProfile');
 const Film = require('../models/Film');
-const User = require('../models/User');
-const { authMiddleware, filmmakerMiddleware } = require('../middleware/auth');
+const { auth, requireRole } = require('../middleware/auth');
 
-// GET /api/filmmaker/profile/:userId - public
+const router = express.Router();
+
+// Get filmmaker dashboard stats
+router.get('/dashboard', auth, requireRole('filmmaker', 'admin'), async (req, res) => {
+  try {
+    const films = await Film.find({ creator: req.user.userId });
+    const stats = {
+      totalFilms: films.length,
+      published: films.filter(f => f.status === 'published').length,
+      pending: films.filter(f => f.status === 'pending_review').length,
+      processing: films.filter(f => f.status === 'processing').length,
+      totalViews: films.reduce((sum, f) => sum + (f.views || 0), 0),
+      totalLikes: films.reduce((sum, f) => sum + (f.likes || 0), 0),
+    };
+    res.json(stats);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get my films
+router.get('/my-films', auth, requireRole('filmmaker', 'admin'), async (req, res) => {
+  try {
+    const films = await Film.find({ creator: req.user.userId })
+      .sort({ createdAt: -1 });
+    res.json(films);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Submit film (links only - filmmaker provides URLs)
+router.post('/submit', auth, requireRole('filmmaker', 'admin'), async (req, res) => {
+  try {
+    const { title, description, filmmakerVideoUrl, filmmakerTrailerUrl, filmmakerPosterUrl, genre, country, language, duration, year } = req.body;
+
+    if (!title || !filmmakerVideoUrl) {
+      return res.status(400).json({ message: 'Title and film URL are required' });
+    }
+
+    const film = new Film({
+      title,
+      description: description || '',
+      filmmakerVideoUrl,
+      filmmakerTrailerUrl: filmmakerTrailerUrl || '',
+      filmmakerPosterUrl: filmmakerPosterUrl || '',
+      creator: req.user.userId,
+      genre: genre || [],
+      country: country || '',
+      language: language || '',
+      duration: duration || '',
+      year: year || new Date().getFullYear(),
+      status: 'pending_review'
+    });
+
+    await film.save();
+    res.status(201).json({ message: 'Film submitted for review', film });
+  } catch (error) {
+    console.error('Submit film error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Update film (only if pending)
+router.put('/film/:id', auth, requireRole('filmmaker', 'admin'), async (req, res) => {
+  try {
+    const film = await Film.findOne({ _id: req.params.id, creator: req.user.userId });
+    if (!film) return res.status(404).json({ message: 'Film not found' });
+    if (!['draft', 'pending_review', 'rejected'].includes(film.status)) {
+      return res.status(400).json({ message: 'Cannot edit film after approval' });
+    }
+
+    const allowed = ['title', 'description', 'filmmakerVideoUrl', 'filmmakerTrailerUrl', 'filmmakerPosterUrl', 'genre', 'country', 'language', 'duration', 'year'];
+    allowed.forEach(key => {
+      if (req.body[key] !== undefined) film[key] = req.body[key];
+    });
+    if (film.status === 'rejected') film.status = 'pending_review';
+
+    await film.save();
+    res.json(film);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Delete film
+router.delete('/film/:id', auth, requireRole('filmmaker', 'admin'), async (req, res) => {
+  try {
+    const film = await Film.findOneAndDelete({ _id: req.params.id, creator: req.user.userId });
+    if (!film) return res.status(404).json({ message: 'Film not found' });
+    res.json({ message: 'Film deleted' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get filmmaker profile
 router.get('/profile/:userId', async (req, res) => {
   try {
-    const profile = await FilmmakerProfile.findOne({ user: req.params.userId })
-      .populate('user', 'name profileImage role');
-    if (!profile) return res.status(404).json({ success: false, error: 'Profile not found' });
-    const films = await Film.find({ filmmaker: req.params.userId, status: { $in: ['approved','published'] } });
-    res.json({ success: true, profile, films });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    const User = require('../models/User');
+    const FilmmakerProfile = require('../models/FilmmakerProfile');
+
+    const user = await User.findById(req.params.userId).select('-password');
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const profile = await FilmmakerProfile.findOne({ user: req.params.userId });
+    const films = await Film.find({ creator: req.params.userId, status: 'published' })
+      .select('title posterUrl rating views createdAt');
+
+    res.json({
+      user,
+      profile: profile || {},
+      films,
+      filmCount: films.length
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// PUT /api/filmmaker/profile - update own profile
-router.put('/profile', authMiddleware, filmmakerMiddleware, async (req, res) => {
+// Update my profile
+router.put('/profile', auth, requireRole('filmmaker', 'admin'), async (req, res) => {
   try {
-    const { bio, country, socialLinks } = req.body;
-    const profile = await FilmmakerProfile.findOneAndUpdate(
-      { user: req.user.id },
-      { bio, country, socialLinks, updatedAt: Date.now() },
-      { new: true, upsert: true }
-    );
-    res.json({ success: true, profile });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+    const FilmmakerProfile = require('../models/FilmmakerProfile');
+    let profile = await FilmmakerProfile.findOne({ user: req.user.userId });
 
-// GET /api/filmmaker/my-films
-router.get('/my-films', authMiddleware, filmmakerMiddleware, async (req, res) => {
-  try {
-    const films = await Film.find({ filmmaker: req.user.id }).sort({ createdAt: -1 });
-    res.json({ success: true, films });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+    if (!profile) {
+      profile = new FilmmakerProfile({ user: req.user.userId, ...req.body });
+    } else {
+      Object.assign(profile, req.body);
+    }
 
-// GET /api/filmmaker/dashboard
-router.get('/dashboard', authMiddleware, filmmakerMiddleware, async (req, res) => {
-  try {
-    const films = await Film.find({ filmmaker: req.user.id });
-    const totalViews = films.reduce((sum, f) => sum + (f.views || 0), 0);
-    const totalFilms = films.length;
-    const pending = films.filter(f => f.status === 'pending_review').length;
-    const published = films.filter(f => f.status === 'published' || f.status === 'approved').length;
-    res.json({ success: true, stats: { totalFilms, totalViews, pending, published } });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    await profile.save();
+    res.json(profile);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
