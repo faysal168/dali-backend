@@ -1,8 +1,29 @@
 const express = require('express');
+const jwt = require('jsonwebtoken');
 const Film = require('../models/Film');
-const { auth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
+
+// Inline auth middleware
+const auth = async (req, res, next) => {
+  try {
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+    if (!token) return res.status(401).json({ message: 'No token' });
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (error) {
+    res.status(401).json({ message: 'Invalid token' });
+  }
+};
+
+const requireRole = (...roles) => {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ message: 'Not authenticated' });
+    if (!roles.includes(req.user.role)) return res.status(403).json({ message: 'Access denied' });
+    next();
+  };
+};
 
 // Get filmmaker dashboard stats
 router.get('/dashboard', auth, requireRole('filmmaker', 'admin'), async (req, res) => {
@@ -25,23 +46,20 @@ router.get('/dashboard', auth, requireRole('filmmaker', 'admin'), async (req, re
 // Get my films
 router.get('/my-films', auth, requireRole('filmmaker', 'admin'), async (req, res) => {
   try {
-    const films = await Film.find({ creator: req.user.userId })
-      .sort({ createdAt: -1 });
+    const films = await Film.find({ creator: req.user.userId }).sort({ createdAt: -1 });
     res.json(films);
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Submit film (links only - filmmaker provides URLs)
+// Submit film (links only)
 router.post('/submit', auth, requireRole('filmmaker', 'admin'), async (req, res) => {
   try {
     const { title, description, filmmakerVideoUrl, filmmakerTrailerUrl, filmmakerPosterUrl, genre, country, language, duration, year } = req.body;
-
     if (!title || !filmmakerVideoUrl) {
       return res.status(400).json({ message: 'Title and film URL are required' });
     }
-
     const film = new Film({
       title,
       description: description || '',
@@ -56,7 +74,6 @@ router.post('/submit', auth, requireRole('filmmaker', 'admin'), async (req, res)
       year: year || new Date().getFullYear(),
       status: 'pending_review'
     });
-
     await film.save();
     res.status(201).json({ message: 'Film submitted for review', film });
   } catch (error) {
@@ -65,7 +82,7 @@ router.post('/submit', auth, requireRole('filmmaker', 'admin'), async (req, res)
   }
 });
 
-// Update film (only if pending)
+// Update film
 router.put('/film/:id', auth, requireRole('filmmaker', 'admin'), async (req, res) => {
   try {
     const film = await Film.findOne({ _id: req.params.id, creator: req.user.userId });
@@ -73,13 +90,9 @@ router.put('/film/:id', auth, requireRole('filmmaker', 'admin'), async (req, res
     if (!['draft', 'pending_review', 'rejected'].includes(film.status)) {
       return res.status(400).json({ message: 'Cannot edit film after approval' });
     }
-
     const allowed = ['title', 'description', 'filmmakerVideoUrl', 'filmmakerTrailerUrl', 'filmmakerPosterUrl', 'genre', 'country', 'language', 'duration', 'year'];
-    allowed.forEach(key => {
-      if (req.body[key] !== undefined) film[key] = req.body[key];
-    });
+    allowed.forEach(key => { if (req.body[key] !== undefined) film[key] = req.body[key]; });
     if (film.status === 'rejected') film.status = 'pending_review';
-
     await film.save();
     res.json(film);
   } catch (error) {
@@ -103,20 +116,11 @@ router.get('/profile/:userId', async (req, res) => {
   try {
     const User = require('../models/User');
     const FilmmakerProfile = require('../models/FilmmakerProfile');
-
     const user = await User.findById(req.params.userId).select('-password');
     if (!user) return res.status(404).json({ message: 'User not found' });
-
     const profile = await FilmmakerProfile.findOne({ user: req.params.userId });
-    const films = await Film.find({ creator: req.params.userId, status: 'published' })
-      .select('title posterUrl rating views createdAt');
-
-    res.json({
-      user,
-      profile: profile || {},
-      films,
-      filmCount: films.length
-    });
+    const films = await Film.find({ creator: req.params.userId, status: 'published' }).select('title posterUrl rating views createdAt');
+    res.json({ user, profile: profile || {}, films, filmCount: films.length });
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
   }
@@ -127,13 +131,11 @@ router.put('/profile', auth, requireRole('filmmaker', 'admin'), async (req, res)
   try {
     const FilmmakerProfile = require('../models/FilmmakerProfile');
     let profile = await FilmmakerProfile.findOne({ user: req.user.userId });
-
     if (!profile) {
       profile = new FilmmakerProfile({ user: req.user.userId, ...req.body });
     } else {
       Object.assign(profile, req.body);
     }
-
     await profile.save();
     res.json(profile);
   } catch (error) {
