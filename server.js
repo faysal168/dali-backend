@@ -17,13 +17,31 @@ app.use((req, res, next) => {
 });
 
 // MongoDB Connection
-const MONGO_URI = process.env.MONGODB_URI || 'mongodb+srv://your_connection_string_here';
-mongoose.connect(MONGO_URI)
-  .then(() => console.log('MongoDB connected'))
-  .catch(err => console.error('MongoDB error:', err));
+const MONGO_URI = process.env.MONGODB_URI || '';
+let dbConnected = false;
+
+if (!MONGO_URI) {
+  console.error('ERROR: MONGODB_URI is not set!');
+} else {
+  mongoose.connect(MONGO_URI)
+    .then(() => {
+      console.log('MongoDB connected');
+      dbConnected = true;
+    })
+    .catch(err => {
+      console.error('MongoDB connection failed:', err.message);
+      dbConnected = false;
+    });
+}
 
 // Models
-const User = require('./models/User');
+let User;
+try {
+  User = require('./models/User');
+  console.log('User model loaded');
+} catch (e) {
+  console.error('User model failed to load:', e.message);
+}
 
 // JWT Secret
 const JWT_SECRET = process.env.JWT_SECRET || 'dali_secret';
@@ -49,11 +67,18 @@ const requireRole = (role) => (req, res, next) => {
   next();
 };
 
-// ========== AUTH ROUTES (INLINE) ==========
+// DB check middleware
+const checkDB = (req, res, next) => {
+  if (!dbConnected || !User) {
+    return res.status(503).json({ message: 'Database not connected. Please try again in a moment.' });
+  }
+  next();
+};
 
-// Register
-app.post('/api/auth/register', async (req, res) => {
-  console.log('REGISTER HIT:', req.body);
+// ========== AUTH ROUTES ==========
+
+app.post('/api/auth/register', checkDB, async (req, res) => {
+  console.log('REGISTER:', req.body);
   try {
     const { name, email, password, role } = req.body;
     if (!name || !email || !password) {
@@ -81,14 +106,13 @@ app.post('/api/auth/register', async (req, res) => {
     const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, user: { _id: user._id, name: user.name, email: user.email, role: user.role } });
   } catch (err) {
-    console.error('REGISTER ERROR:', err);
+    console.error('REGISTER ERROR:', err.message);
     res.status(500).json({ message: err.message });
   }
 });
 
-// Login
-app.post('/api/auth/login', async (req, res) => {
-  console.log('LOGIN HIT:', req.body);
+app.post('/api/auth/login', checkDB, async (req, res) => {
+  console.log('LOGIN:', req.body);
   try {
     const { email, password } = req.body;
     if (!email || !password) {
@@ -105,12 +129,11 @@ app.post('/api/auth/login', async (req, res) => {
     const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, user: { _id: user._id, name: user.name, email: user.email, role: user.role } });
   } catch (err) {
-    console.error('LOGIN ERROR:', err);
+    console.error('LOGIN ERROR:', err.message);
     res.status(500).json({ message: err.message });
   }
 });
 
-// Get me
 app.get('/api/auth/me', auth, async (req, res) => {
   try {
     res.json(req.user);
@@ -119,7 +142,6 @@ app.get('/api/auth/me', auth, async (req, res) => {
   }
 });
 
-// Update profile
 app.put('/api/auth/profile', auth, async (req, res) => {
   try {
     const { name, phone, bio } = req.body;
@@ -130,7 +152,6 @@ app.put('/api/auth/profile', auth, async (req, res) => {
   }
 });
 
-// Forgot password
 app.post('/api/auth/forgot-password', async (req, res) => {
   try {
     const { email } = req.body;
@@ -142,7 +163,6 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   }
 });
 
-// Reset password
 app.post('/api/auth/reset-password', async (req, res) => {
   try {
     res.json({ message: 'Password reset successful' });
@@ -151,7 +171,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
   }
 });
 
-// ========== OTHER ROUTES (wrapped in try-catch) ==========
+// ========== OTHER ROUTES ==========
 
 try {
   app.use('/api/films', require('./routes/films'));
@@ -196,16 +216,22 @@ try {
 }
 
 // Health check
-app.get('/', (req, res) => res.send('DALI Backend Running'));
-
-// Catch-all for API routes that don't exist — return JSON, not HTML
-app.use('/api/*', (req, res) => {
-  res.status(404).json({ message: 'API endpoint not found', path: req.path });
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'DALI Backend Running', 
+    dbConnected,
+    timestamp: new Date().toISOString()
+  });
 });
 
-// Error handler — always return JSON
+// Catch-all
+app.use('/api/*', (req, res) => {
+  res.status(404).json({ message: 'API endpoint not found' });
+});
+
+// Error handler — ALWAYS return JSON
 app.use((err, req, res, next) => {
-  console.error('ERROR:', err.stack);
+  console.error('SERVER ERROR:', err.stack);
   res.status(500).json({ message: err.message || 'Server error' });
 });
 
