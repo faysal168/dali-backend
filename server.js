@@ -47,7 +47,6 @@ app.use('/api/filmmaker', require('./routes/filmmaker'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/watchlist', require('./routes/watchlist'));
 app.use('/api/notifications', require('./routes/notifications'));
-app.use('/api/users', require('./routes/users'));
 app.use('/api/earnings', require('./routes/earnings'));
 
 // Error handler
