@@ -1,7 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-require('dotenv').config();
 
 const app = express();
 
@@ -49,7 +48,7 @@ app.use('/api/admin', require('./routes/admin'));
 app.use('/api/watchlist', require('./routes/watchlist'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/users', require('./routes/users'));
-app.use('/api/earnings', require('./routes/earnings')); // NEW — monetization
+app.use('/api/earnings', require('./routes/earnings'));
 
 // Error handler
 app.use((err, req, res, next) => {
