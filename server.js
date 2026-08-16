@@ -1,56 +1,61 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const cors = require('cors');
-const path = require('path');
-const fs = require('fs');
-const connectDB = require('./config/db');
+require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
 
-connectDB();
+// Middleware
+app.use(cors());
+app.use(express.json());
 
-const uploadsDir = path.join(__dirname, 'uploads');
-const postersDir = path.join(__dirname, 'uploads', 'posters');
-const videosDir = path.join(__dirname, 'uploads', 'videos');
-[uploadsDir, postersDir, videosDir].forEach(dir => {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-});
+// MongoDB Connection
+const MONGO_URI = process.env.MONGO_URI || 'mongodb+srv://your_connection_string_here';
+mongoose.connect(MONGO_URI)
+  .then(() => console.log('MongoDB connected'))
+  .catch(err => console.error('MongoDB error:', err));
 
-const corsOptions = {
-  origin: process.env.FRONTEND_URL || '*',
-  credentials: true
+// Inline auth middleware (self-contained, no external imports)
+const auth = async (req, res, next) => {
+  try {
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+    if (!token) return res.status(401).json({ message: 'No token' });
+    const jwt = require('jsonwebtoken');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'dali_secret');
+    const User = require('./models/User');
+    req.user = await User.findById(decoded.id).select('-password');
+    if (!req.user) return res.status(401).json({ message: 'User not found' });
+    next();
+  } catch (err) {
+    res.status(401).json({ message: 'Token invalid' });
+  }
 };
-app.use(cors(corsOptions));
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+const requireRole = (role) => (req, res, next) => {
+  if (req.user.role !== role && req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Access denied' });
+  }
+  next();
+};
+
+// Health check
+app.get('/', (req, res) => res.send('DALI Backend Running'));
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/films', require('./routes/films'));
-app.use('/api/upload', require('./routes/upload'));
-app.use('/api/likes', require('./routes/likes'));
-app.use('/api/comments', require('./routes/comments'));
-app.use('/api/watchlist', require('./routes/watchlist'));
-app.use('/api/follows', require('./routes/follows'));
 app.use('/api/filmmaker', require('./routes/filmmaker'));
 app.use('/api/admin', require('./routes/admin'));
-app.use('/api/reports', require('./routes/reports'));
+app.use('/api/watchlist', require('./routes/watchlist'));
 app.use('/api/notifications', require('./routes/notifications'));
-app.use('/api/analytics', require('./routes/analytics'));
-
-// Health
-app.get('/api/health', (req, res) => {
-  res.json({ success: true, message: 'DALI API is running', timestamp: new Date().toISOString() });
-});
+app.use('/api/users', require('./routes/users'));
+app.use('/api/earnings', require('./routes/earnings')); // NEW — monetization
 
 // Error handler
 app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(500).json({ success: false, error: err.message || 'Internal server error' });
+  console.error(err.stack);
+  res.status(500).json({ message: err.message || 'Server error' });
 });
 
-app.listen(PORT, () => {
-  console.log(`🎬 DALI Backend running on port ${PORT}`);
-  console.log(`☁️  Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME || 'not set'}`);
-});
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
