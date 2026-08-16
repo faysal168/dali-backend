@@ -10,6 +10,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Request logger
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.url}`);
+  next();
+});
+
 // MongoDB Connection
 const MONGO_URI = process.env.MONGODB_URI || 'mongodb+srv://your_connection_string_here';
 mongoose.connect(MONGO_URI)
@@ -47,6 +53,7 @@ const requireRole = (role) => (req, res, next) => {
 
 // Register
 app.post('/api/auth/register', async (req, res) => {
+  console.log('REGISTER HIT:', req.body);
   try {
     const { name, email, password, role } = req.body;
     if (!name || !email || !password) {
@@ -74,12 +81,14 @@ app.post('/api/auth/register', async (req, res) => {
     const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, user: { _id: user._id, name: user.name, email: user.email, role: user.role } });
   } catch (err) {
+    console.error('REGISTER ERROR:', err);
     res.status(500).json({ message: err.message });
   }
 });
 
 // Login
 app.post('/api/auth/login', async (req, res) => {
+  console.log('LOGIN HIT:', req.body);
   try {
     const { email, password } = req.body;
     if (!email || !password) {
@@ -96,6 +105,7 @@ app.post('/api/auth/login', async (req, res) => {
     const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, user: { _id: user._id, name: user.name, email: user.email, role: user.role } });
   } catch (err) {
+    console.error('LOGIN ERROR:', err);
     res.status(500).json({ message: err.message });
   }
 });
@@ -141,20 +151,61 @@ app.post('/api/auth/reset-password', async (req, res) => {
   }
 });
 
-// ========== OTHER ROUTES ==========
-app.use('/api/films', require('./routes/films'));
-app.use('/api/filmmaker', require('./routes/filmmaker'));
-app.use('/api/admin', require('./routes/admin'));
-app.use('/api/watchlist', require('./routes/watchlist'));
-app.use('/api/notifications', require('./routes/notifications'));
-app.use('/api/earnings', require('./routes/earnings'));
+// ========== OTHER ROUTES (wrapped in try-catch) ==========
+
+try {
+  app.use('/api/films', require('./routes/films'));
+  console.log('Films routes loaded');
+} catch (e) {
+  console.error('Films routes failed:', e.message);
+}
+
+try {
+  app.use('/api/filmmaker', require('./routes/filmmaker'));
+  console.log('Filmmaker routes loaded');
+} catch (e) {
+  console.error('Filmmaker routes failed:', e.message);
+}
+
+try {
+  app.use('/api/admin', require('./routes/admin'));
+  console.log('Admin routes loaded');
+} catch (e) {
+  console.error('Admin routes failed:', e.message);
+}
+
+try {
+  app.use('/api/watchlist', require('./routes/watchlist'));
+  console.log('Watchlist routes loaded');
+} catch (e) {
+  console.error('Watchlist routes failed:', e.message);
+}
+
+try {
+  app.use('/api/notifications', require('./routes/notifications'));
+  console.log('Notifications routes loaded');
+} catch (e) {
+  console.error('Notifications routes failed:', e.message);
+}
+
+try {
+  app.use('/api/earnings', require('./routes/earnings'));
+  console.log('Earnings routes loaded');
+} catch (e) {
+  console.error('Earnings routes failed:', e.message);
+}
 
 // Health check
 app.get('/', (req, res) => res.send('DALI Backend Running'));
 
-// Error handler
+// Catch-all for API routes that don't exist — return JSON, not HTML
+app.use('/api/*', (req, res) => {
+  res.status(404).json({ message: 'API endpoint not found', path: req.path });
+});
+
+// Error handler — always return JSON
 app.use((err, req, res, next) => {
-  console.error(err.stack);
+  console.error('ERROR:', err.stack);
   res.status(500).json({ message: err.message || 'Server error' });
 });
 
