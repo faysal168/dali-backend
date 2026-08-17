@@ -4,3 +4,5 @@ uploads/*
 !uploads/.gitkeep
 !uploads/posters/.gitkeep
 !uploads/videos/.gitkeep
+
+.vercel
