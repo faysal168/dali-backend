@@ -3,16 +3,27 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const cloudinary = require('cloudinary').v2;
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Cloudinary config
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+// Multer (memory storage)
+const upload = multer({ storage: multer.memoryStorage() });
+
 // MongoDB
 const MONGO_URI = process.env.MONGODB_URI || '';
 mongoose.connect(MONGO_URI).then(() => console.log('MongoDB connected')).catch(e => console.error('MongoDB error:', e.message));
 
-// JWT
 const JWT_SECRET = process.env.JWT_SECRET || 'dali_secret';
 
 // ========== MODELS ==========
@@ -271,6 +282,18 @@ app.post('/api/filmmaker/submit', auth, requireRole('filmmaker'), async (req, re
       filmmakerLinks: { filmUrl, trailerUrl, posterUrl }
     });
     await film.save();
+
+    // Notify all admins
+    const admins = await User.find({ role: 'admin' });
+    for (const admin of admins) {
+      await new Notification({
+        user: admin._id,
+        message: `New film "${title}" submitted by ${req.user.name} for review`,
+        type: 'submission',
+        link: `/admin`
+      }).save();
+    }
+
     res.json({ message: 'Film submitted for review', film });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
@@ -291,6 +314,77 @@ app.get('/api/filmmaker/stats', auth, requireRole('filmmaker'), async (req, res)
     const totalViews = films.reduce((sum, f) => sum + f.views, 0);
     res.json({ totalFilms, approved, pending, totalViews });
   } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+// ========== CLOUDINARY UPLOAD (ADMIN) ==========
+app.post('/api/admin/upload/:id', auth, requireRole('admin'), upload.fields([
+  { name: 'poster', maxCount: 1 },
+  { name: 'trailer', maxCount: 1 },
+  { name: 'video', maxCount: 1 }
+]), async (req, res) => {
+  try {
+    const film = await Film.findById(req.params.id).populate('filmmaker', 'name email _id');
+    if (!film) return res.status(404).json({ message: 'Film not found' });
+
+    const uploads = {};
+
+    // Upload poster (image)
+    if (req.files?.poster?.[0]) {
+      const result = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: 'dali/posters', resource_type: 'image' },
+          (err, result) => { if (err) reject(err); else resolve(result); }
+        );
+        stream.end(req.files.poster[0].buffer);
+      });
+      uploads.poster = result.secure_url;
+    }
+
+    // Upload trailer (video)
+    if (req.files?.trailer?.[0]) {
+      const result = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: 'dali/trailers', resource_type: 'video' },
+          (err, result) => { if (err) reject(err); else resolve(result); }
+        );
+        stream.end(req.files.trailer[0].buffer);
+      });
+      uploads.trailerUrl = result.secure_url;
+    }
+
+    // Upload film video
+    if (req.files?.video?.[0]) {
+      const result = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: 'dali/films', resource_type: 'video' },
+          (err, result) => { if (err) reject(err); else resolve(result); }
+        );
+        stream.end(req.files.video[0].buffer);
+      });
+      uploads.videoUrl = result.secure_url;
+    }
+
+    // Update film
+    if (uploads.poster) film.poster = uploads.poster;
+    if (uploads.trailerUrl) film.trailerUrl = uploads.trailerUrl;
+    if (uploads.videoUrl) film.videoUrl = uploads.videoUrl;
+    film.status = 'approved';
+    film.publishedAt = new Date();
+    await film.save();
+
+    // Notify filmmaker
+    await new Notification({
+      user: film.filmmaker._id,
+      message: `Your film "${film.title}" has been approved and published!`,
+      type: 'approval',
+      link: `/film/${film._id}`
+    }).save();
+
+    res.json({ message: 'Film published with Cloudinary assets', film, uploads });
+  } catch (err) {
+    console.error('Upload error:', err);
+    res.status(500).json({ message: err.message });
+  }
 });
 
 // ========== ADMIN ROUTES ==========
@@ -328,7 +422,7 @@ app.get('/api/admin/reports', auth, requireRole('admin'), async (req, res) => {
 app.post('/api/admin/approve/:id', auth, requireRole('admin'), async (req, res) => {
   try {
     const { videoUrl, poster, trailerUrl, status } = req.body;
-    const film = await Film.findById(req.params.id);
+    const film = await Film.findById(req.params.id).populate('filmmaker', '_id name');
     if (!film) return res.status(404).json({ message: 'Film not found' });
     if (videoUrl) film.videoUrl = videoUrl;
     if (poster) film.poster = poster;
@@ -336,6 +430,14 @@ app.post('/api/admin/approve/:id', auth, requireRole('admin'), async (req, res) 
     film.status = status || 'approved';
     film.publishedAt = new Date();
     await film.save();
+
+    await new Notification({
+      user: film.filmmaker._id,
+      message: `Your film "${film.title}" has been approved and published!`,
+      type: 'approval',
+      link: `/film/${film._id}`
+    }).save();
+
     res.json({ message: 'Film approved', film });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
@@ -343,7 +445,15 @@ app.post('/api/admin/approve/:id', auth, requireRole('admin'), async (req, res) 
 app.post('/api/admin/reject/:id', auth, requireRole('admin'), async (req, res) => {
   try {
     const { reason } = req.body;
-    const film = await Film.findByIdAndUpdate(req.params.id, { status: 'rejected', rejectionReason: reason }, { new: true });
+    const film = await Film.findByIdAndUpdate(req.params.id, { status: 'rejected', rejectionReason: reason }, { new: true }).populate('filmmaker', '_id name');
+
+    await new Notification({
+      user: film.filmmaker._id,
+      message: `Your film "${film.title}" was rejected. Reason: ${reason || 'No reason provided'}`,
+      type: 'rejection',
+      link: `/dashboard`
+    }).save();
+
     res.json({ message: 'Film rejected', film });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
@@ -447,7 +557,7 @@ app.delete('/api/watchlist/:filmId', auth, async (req, res) => {
 // ========== NOTIFICATION ROUTES ==========
 app.get('/api/notifications', auth, async (req, res) => {
   try {
-    const notifications = await Notification.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(20);
+    const notifications = await Notification.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(50);
     res.json(notifications);
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
@@ -456,6 +566,13 @@ app.put('/api/notifications/:id/read', auth, async (req, res) => {
   try {
     await Notification.findByIdAndUpdate(req.params.id, { read: true });
     res.json({ message: 'Marked as read' });
+  } catch (err) { res.status(500).json({ message: err.message }); }
+});
+
+app.get('/api/notifications/unread-count', auth, async (req, res) => {
+  try {
+    const count = await Notification.countDocuments({ user: req.user._id, read: false });
+    res.json({ count });
   } catch (err) { res.status(500).json({ message: err.message }); }
 });
 
