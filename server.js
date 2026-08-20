@@ -5,7 +5,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const streamifier = require('streamifier');
 
 const app = express();
 app.use(cors());
@@ -19,15 +19,25 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// Multer storage for Cloudinary
-const storage = new CloudinaryStorage({
-  cloudinary: cloudinary,
-  params: {
-    folder: 'dali-films',
-    resource_type: 'auto',
-  },
+// Multer - memory storage (we upload to Cloudinary manually)
+const upload = multer({ 
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 500 * 1024 * 1024 } // 500MB limit
 });
-const upload = multer({ storage: storage });
+
+// Helper: upload buffer to Cloudinary
+const uploadToCloudinary = (buffer, folder, resourceType = 'auto') => {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { folder: folder || 'dali-films', resource_type: resourceType },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result.secure_url);
+      }
+    );
+    streamifier.createReadStream(buffer).pipe(stream);
+  });
+};
 
 // MongoDB Connection
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/dali';
@@ -165,16 +175,14 @@ app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, email, password, role, phone } = req.body;
     if (!name || !email || !password) return res.status(400).json({ message: 'All fields required' });
-
     const existing = await User.findOne({ email });
     if (existing) return res.status(400).json({ message: 'Email already registered' });
-
     const user = new User({ name, email, password, role: role || 'viewer', phone: phone || '' });
     await user.save();
-
     const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET || 'dali_secret', { expiresIn: '7d' });
     res.json({ token, user: { id: user._id, name: user.name, email: user.email, role: user.role } });
   } catch (err) {
+    console.error('REGISTER ERROR:', err);
     res.status(500).json({ message: err.message });
   }
 });
@@ -183,16 +191,14 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) return res.status(400).json({ message: 'Email and password required' });
-
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ message: 'Invalid credentials' });
-
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
-
     const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET || 'dali_secret', { expiresIn: '7d' });
     res.json({ token, user: { id: user._id, name: user.name, email: user.email, role: user.role, phone: user.phone || '' } });
   } catch (err) {
+    console.error('LOGIN ERROR:', err);
     res.status(500).json({ message: err.message });
   }
 });
@@ -214,11 +220,7 @@ app.get('/api/films', async (req, res) => {
         { description: { $regex: search, $options: 'i' } }
       ];
     }
-    const films = await Film.find(query)
-      .populate('filmmaker', 'name')
-      .sort({ publishedAt: -1 })
-      .limit(limit * 1)
-      .skip((page - 1) * limit);
+    const films = await Film.find(query).populate('filmmaker', 'name').sort({ publishedAt: -1 }).limit(limit * 1).skip((page - 1) * limit);
     const count = await Film.countDocuments(query);
     res.json({ films, totalPages: Math.ceil(count / limit), currentPage: page });
   } catch (err) {
@@ -228,9 +230,7 @@ app.get('/api/films', async (req, res) => {
 
 app.get('/api/films/featured', async (req, res) => {
   try {
-    const films = await Film.find({ status: 'approved', featured: true })
-      .populate('filmmaker', 'name')
-      .limit(5);
+    const films = await Film.find({ status: 'approved', featured: true }).populate('filmmaker', 'name').limit(5);
     res.json(films);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -239,10 +239,7 @@ app.get('/api/films/featured', async (req, res) => {
 
 app.get('/api/films/trending', async (req, res) => {
   try {
-    const films = await Film.find({ status: 'approved' })
-      .populate('filmmaker', 'name')
-      .sort({ views: -1 })
-      .limit(10);
+    const films = await Film.find({ status: 'approved' }).populate('filmmaker', 'name').sort({ views: -1 }).limit(10);
     res.json(films);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -263,14 +260,12 @@ app.post('/api/films/:id/view', auth, async (req, res) => {
   try {
     const film = await Film.findById(req.params.id);
     if (!film) return res.status(404).json({ message: 'Film not found' });
-
     const viewerEmail = req.user.email;
     if (!film.uniqueViewers.includes(viewerEmail)) {
       film.uniqueViewers.push(viewerEmail);
       film.views = film.uniqueViewers.length;
       await film.save();
     }
-
     res.json({ views: film.views, uniqueViews: film.uniqueViewers.length, earnings: film.calculateEarnings() });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -281,10 +276,8 @@ app.post('/api/films/:id/like', auth, async (req, res) => {
   try {
     const film = await Film.findById(req.params.id);
     if (!film) return res.status(404).json({ message: 'Film not found' });
-
     const userId = req.user._id.toString();
     const liked = film.likes.map(id => id.toString()).includes(userId);
-
     if (liked) {
       film.likes = film.likes.filter(id => id.toString() !== userId);
       film.likesCount = Math.max(0, film.likesCount - 1);
@@ -301,9 +294,7 @@ app.post('/api/films/:id/like', auth, async (req, res) => {
 
 app.get('/api/films/:id/comments', async (req, res) => {
   try {
-    const comments = await Comment.find({ film: req.params.id })
-      .populate('user', 'name')
-      .sort({ createdAt: -1 });
+    const comments = await Comment.find({ film: req.params.id }).populate('user', 'name').sort({ createdAt: -1 });
     res.json(comments);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -314,13 +305,7 @@ app.post('/api/films/:id/comments', auth, async (req, res) => {
   try {
     const { text } = req.body;
     if (!text) return res.status(400).json({ message: 'Comment text required' });
-
-    const comment = new Comment({
-      film: req.params.id,
-      user: req.user._id,
-      userName: req.user.name,
-      text
-    });
+    const comment = new Comment({ film: req.params.id, user: req.user._id, userName: req.user.name, text });
     await comment.save();
     res.json(comment);
   } catch (err) {
@@ -333,28 +318,16 @@ app.post('/api/films/:id/comments', auth, async (req, res) => {
 app.post('/api/filmmaker/submit', auth, requireRole('filmmaker'), async (req, res) => {
   try {
     const { title, description, synopsis, genre, duration, year, country, language, director, cast, filmmakerLinks } = req.body;
-
     const film = new Film({
       title, description, synopsis, genre, duration, year, country, language, director, cast,
-      filmmaker: req.user._id,
-      filmmakerName: req.user.name,
-      filmmakerLinks: filmmakerLinks || {},
-      status: 'pending_review'
+      filmmaker: req.user._id, filmmakerName: req.user.name,
+      filmmakerLinks: filmmakerLinks || {}, status: 'pending_review'
     });
     await film.save();
-
-    // Notify all admins
     const admins = await User.find({ role: 'admin' });
     for (const admin of admins) {
-      await Notification.create({
-        user: admin._id,
-        title: 'New Film Submission',
-        message: `${req.user.name} submitted "${title}" for review`,
-        type: 'submission',
-        link: '/admin'
-      });
+      await Notification.create({ user: admin._id, title: 'New Film Submission', message: `${req.user.name} submitted "${title}" for review`, type: 'submission', link: '/admin' });
     }
-
     res.json({ message: 'Film submitted successfully', film });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -363,8 +336,7 @@ app.post('/api/filmmaker/submit', auth, requireRole('filmmaker'), async (req, re
 
 app.get('/api/filmmaker/my-films', auth, requireRole('filmmaker'), async (req, res) => {
   try {
-    const films = await Film.find({ filmmaker: req.user._id, status: 'approved' })
-      .sort({ publishedAt: -1 });
+    const films = await Film.find({ filmmaker: req.user._id, status: 'approved' }).sort({ publishedAt: -1 });
     res.json(films);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -373,8 +345,7 @@ app.get('/api/filmmaker/my-films', auth, requireRole('filmmaker'), async (req, r
 
 app.get('/api/filmmaker/submissions', auth, requireRole('filmmaker'), async (req, res) => {
   try {
-    const films = await Film.find({ filmmaker: req.user._id })
-      .sort({ submittedAt: -1 });
+    const films = await Film.find({ filmmaker: req.user._id }).sort({ submittedAt: -1 });
     res.json(films);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -393,28 +364,12 @@ app.get('/api/earnings/creator', auth, requireRole('filmmaker'), async (req, res
     const paidOut = films.reduce((sum, f) => sum + (f.payoutStatus === 'paid' ? f.payoutAmount : 0), 0);
     const available = totalEarnings - paidOut;
     const canRequest = available >= MIN_PAYOUT_UGX;
-
     const filmStats = films.map(f => ({
-      _id: f._id,
-      title: f.title,
-      uniqueViews: f.uniqueViewers?.length || 0,
-      totalViews: f.views,
-      earnings: f.calculateEarnings(),
-      status: f.status,
-      payoutStatus: f.payoutStatus,
-      poster: f.poster
+      _id: f._id, title: f.title, uniqueViews: f.uniqueViewers?.length || 0,
+      totalViews: f.views, earnings: f.calculateEarnings(), status: f.status,
+      payoutStatus: f.payoutStatus, poster: f.poster
     }));
-
-    res.json({
-      totalUniqueViews,
-      totalEarnings,
-      paidOut,
-      available,
-      canRequest,
-      minPayout: MIN_PAYOUT_UGX,
-      rate: '$2 per 500 unique views',
-      films: filmStats
-    });
+    res.json({ totalUniqueViews, totalEarnings, paidOut, available, canRequest, minPayout: MIN_PAYOUT_UGX, rate: '$2 per 500 unique views', films: filmStats });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -427,36 +382,17 @@ app.post('/api/earnings/request', auth, requireRole('filmmaker'), async (req, re
     const totalEarnings = films.reduce((sum, f) => sum + f.calculateEarnings(), 0);
     const paidOut = films.reduce((sum, f) => sum + (f.payoutStatus === 'paid' ? f.payoutAmount : 0), 0);
     const available = totalEarnings - paidOut;
-
     if (available < MIN_PAYOUT_UGX) {
       return res.status(400).json({ message: `Minimum payout is UGX ${MIN_PAYOUT_UGX.toLocaleString()}` });
     }
-
     await Film.updateMany(
       { filmmaker: req.user._id, payoutStatus: 'none', status: 'approved' },
-      { 
-        $set: { 
-          payoutRequested: true, 
-          payoutStatus: 'pending', 
-          payoutAmount: available,
-          payoutMethod: method || 'MTN Mobile Money',
-          payoutPhone: phone || req.user.phone || ''
-        } 
-      }
+      { $set: { payoutRequested: true, payoutStatus: 'pending', payoutAmount: available, payoutMethod: method || 'MTN Mobile Money', payoutPhone: phone || req.user.phone || '' } }
     );
-
-    // Notify admins
     const admins = await User.find({ role: 'admin' });
     for (const admin of admins) {
-      await Notification.create({
-        user: admin._id,
-        title: 'Payout Requested',
-        message: `${req.user.name} requested UGX ${available.toLocaleString()} payout`,
-        type: 'payout',
-        link: '/admin'
-      });
+      await Notification.create({ user: admin._id, title: 'Payout Requested', message: `${req.user.name} requested UGX ${available.toLocaleString()} payout`, type: 'payout', link: '/admin' });
     }
-
     res.json({ message: 'Payout requested successfully', amount: available, status: 'pending' });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -467,9 +403,7 @@ app.post('/api/earnings/request', auth, requireRole('filmmaker'), async (req, re
 
 app.get('/api/admin/submissions', auth, requireRole('admin'), async (req, res) => {
   try {
-    const films = await Film.find({ status: { $in: ['pending_review', 'processing'] } })
-      .populate('filmmaker', 'name email phone')
-      .sort({ submittedAt: -1 });
+    const films = await Film.find({ status: { $in: ['pending_review', 'processing'] } }).populate('filmmaker', 'name email phone').sort({ submittedAt: -1 });
     res.json(films);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -478,9 +412,7 @@ app.get('/api/admin/submissions', auth, requireRole('admin'), async (req, res) =
 
 app.get('/api/admin/films', auth, requireRole('admin'), async (req, res) => {
   try {
-    const films = await Film.find({ status: 'approved' })
-      .populate('filmmaker', 'name email phone')
-      .sort({ publishedAt: -1 });
+    const films = await Film.find({ status: 'approved' }).populate('filmmaker', 'name email phone').sort({ publishedAt: -1 });
     res.json(films);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -491,27 +423,10 @@ app.get('/api/admin/films/:id/analytics', auth, requireRole('admin'), async (req
   try {
     const film = await Film.findById(req.params.id).populate('filmmaker', 'name email phone');
     if (!film) return res.status(404).json({ message: 'Film not found' });
-
     const comments = await Comment.countDocuments({ film: req.params.id });
-
     res.json({
-      film: {
-        _id: film._id,
-        title: film.title,
-        poster: film.poster,
-        filmmaker: film.filmmaker,
-        status: film.status,
-        publishedAt: film.publishedAt
-      },
-      analytics: {
-        totalViews: film.views,
-        uniqueViews: film.uniqueViewers?.length || 0,
-        likes: film.likesCount,
-        comments: comments,
-        earnings: film.calculateEarnings(),
-        payoutStatus: film.payoutStatus,
-        payoutAmount: film.payoutAmount
-      }
+      film: { _id: film._id, title: film.title, poster: film.poster, filmmaker: film.filmmaker, status: film.status, publishedAt: film.publishedAt },
+      analytics: { totalViews: film.views, uniqueViews: film.uniqueViewers?.length || 0, likes: film.likesCount, comments, earnings: film.calculateEarnings(), payoutStatus: film.payoutStatus, payoutAmount: film.payoutAmount }
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -522,45 +437,67 @@ app.delete('/api/admin/films/:id', auth, requireRole('admin'), async (req, res) 
   try {
     const film = await Film.findById(req.params.id);
     if (!film) return res.status(404).json({ message: 'Film not found' });
-
-    // Delete from Cloudinary if URLs exist
     if (film.poster && film.poster.includes('cloudinary')) {
-      const publicId = film.poster.split('/').pop().split('.')[0];
-      cloudinary.uploader.destroy(`dali-films/${publicId}`).catch(() => {});
+      try { const publicId = film.poster.split('/upload/')[1]?.split('.')[0]; if (publicId) cloudinary.uploader.destroy(publicId); } catch(e) {}
     }
-
     await Film.findByIdAndDelete(req.params.id);
     await Comment.deleteMany({ film: req.params.id });
-
-    // Notify filmmaker
-    await Notification.create({
-      user: film.filmmaker,
-      title: 'Film Removed',
-      message: `Your film "${film.title}" has been removed from the platform`,
-      type: 'system'
-    });
-
+    await Notification.create({ user: film.filmmaker, title: 'Film Removed', message: `Your film "${film.title}" has been removed from the platform`, type: 'system' });
     res.json({ message: 'Film deleted successfully' });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
 });
 
+// PUBLISH with manual Cloudinary upload
 app.post('/api/admin/films/:id/publish', auth, requireRole('admin'), upload.fields([
   { name: 'poster', maxCount: 1 },
   { name: 'trailer', maxCount: 1 },
   { name: 'video', maxCount: 1 }
 ]), async (req, res) => {
   try {
+    console.log('PUBLISH HIT for film:', req.params.id);
+    console.log('Files received:', req.files ? Object.keys(req.files) : 'none');
+
     const film = await Film.findById(req.params.id);
     if (!film) return res.status(404).json({ message: 'Film not found' });
 
     const updates = { status: 'approved', publishedAt: new Date() };
 
-    if (req.files) {
-      if (req.files.poster) updates.poster = req.files.poster[0].path;
-      if (req.files.trailer) updates.trailerUrl = req.files.trailer[0].path;
-      if (req.files.video) updates.videoUrl = req.files.video[0].path;
+    // Upload poster to Cloudinary
+    if (req.files && req.files.poster && req.files.poster[0]) {
+      try {
+        console.log('Uploading poster...');
+        updates.poster = await uploadToCloudinary(req.files.poster[0].buffer, 'dali-films/posters', 'image');
+        console.log('Poster uploaded:', updates.poster);
+      } catch (uploadErr) {
+        console.error('Poster upload error:', uploadErr);
+        return res.status(500).json({ message: 'Poster upload failed: ' + uploadErr.message });
+      }
+    }
+
+    // Upload trailer to Cloudinary
+    if (req.files && req.files.trailer && req.files.trailer[0]) {
+      try {
+        console.log('Uploading trailer...');
+        updates.trailerUrl = await uploadToCloudinary(req.files.trailer[0].buffer, 'dali-films/trailers', 'video');
+        console.log('Trailer uploaded:', updates.trailerUrl);
+      } catch (uploadErr) {
+        console.error('Trailer upload error:', uploadErr);
+        return res.status(500).json({ message: 'Trailer upload failed: ' + uploadErr.message });
+      }
+    }
+
+    // Upload full film to Cloudinary
+    if (req.files && req.files.video && req.files.video[0]) {
+      try {
+        console.log('Uploading video...');
+        updates.videoUrl = await uploadToCloudinary(req.files.video[0].buffer, 'dali-films/videos', 'video');
+        console.log('Video uploaded:', updates.videoUrl);
+      } catch (uploadErr) {
+        console.error('Video upload error:', uploadErr);
+        return res.status(500).json({ message: 'Video upload failed: ' + uploadErr.message });
+      }
     }
 
     if (req.body.adminNotes) updates.adminNotes = req.body.adminNotes;
@@ -569,7 +506,6 @@ app.post('/api/admin/films/:id/publish', auth, requireRole('admin'), upload.fiel
     Object.assign(film, updates);
     await film.save();
 
-    // Notify filmmaker
     await Notification.create({
       user: film.filmmaker,
       title: 'Film Approved',
@@ -580,6 +516,7 @@ app.post('/api/admin/films/:id/publish', auth, requireRole('admin'), upload.fiel
 
     res.json({ message: 'Film published successfully', film });
   } catch (err) {
+    console.error('PUBLISH ERROR:', err);
     res.status(500).json({ message: err.message });
   }
 });
@@ -589,20 +526,10 @@ app.post('/api/admin/films/:id/reject', auth, requireRole('admin'), async (req, 
     const { reason } = req.body;
     const film = await Film.findById(req.params.id);
     if (!film) return res.status(404).json({ message: 'Film not found' });
-
     film.status = 'rejected';
     film.rejectionReason = reason || 'Not specified';
     await film.save();
-
-    // Notify filmmaker
-    await Notification.create({
-      user: film.filmmaker,
-      title: 'Film Rejected',
-      message: `Your film "${film.title}" was not approved. Reason: ${film.rejectionReason}`,
-      type: 'rejection',
-      link: '/dashboard'
-    });
-
+    await Notification.create({ user: film.filmmaker, title: 'Film Rejected', message: `Your film "${film.title}" was not approved. Reason: ${film.rejectionReason}`, type: 'rejection', link: '/dashboard' });
     res.json({ message: 'Film rejected', film });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -613,10 +540,8 @@ app.post('/api/admin/films/:id/processing', auth, requireRole('admin'), async (r
   try {
     const film = await Film.findById(req.params.id);
     if (!film) return res.status(404).json({ message: 'Film not found' });
-
     film.status = 'processing';
     await film.save();
-
     res.json({ message: 'Film marked as processing', film });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -626,16 +551,7 @@ app.post('/api/admin/films/:id/processing', auth, requireRole('admin'), async (r
 app.get('/api/admin/payouts', auth, requireRole('admin'), async (req, res) => {
   try {
     const films = await Film.find({ payoutStatus: 'pending' }).populate('filmmaker', 'name email phone');
-    const payouts = films.map(f => ({
-      _id: f._id,
-      filmmaker: f.filmmaker,
-      title: f.title,
-      amount: f.payoutAmount,
-      method: f.payoutMethod,
-      phone: f.payoutPhone,
-      requestedAt: f.updatedAt,
-      uniqueViews: f.uniqueViewers?.length || 0
-    }));
+    const payouts = films.map(f => ({ _id: f._id, filmmaker: f.filmmaker, title: f.title, amount: f.payoutAmount, method: f.payoutMethod, phone: f.payoutPhone, requestedAt: f.updatedAt, uniqueViews: f.uniqueViewers?.length || 0 }));
     res.json(payouts);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -647,20 +563,11 @@ app.post('/api/admin/payouts/:id/pay', auth, requireRole('admin'), async (req, r
     const film = await Film.findById(req.params.id);
     if (!film) return res.status(404).json({ message: 'Film not found' });
     if (film.payoutStatus !== 'pending') return res.status(400).json({ message: 'No pending payout' });
-
     film.payoutStatus = 'paid';
     film.payoutDate = new Date();
     film.totalEarnings += film.payoutAmount;
     await film.save();
-
-    // Notify filmmaker
-    await Notification.create({
-      user: film.filmmaker,
-      title: 'Payout Sent',
-      message: `UGX ${film.payoutAmount.toLocaleString()} has been sent for "${film.title}"`,
-      type: 'payout'
-    });
-
+    await Notification.create({ user: film.filmmaker, title: 'Payout Sent', message: `UGX ${film.payoutAmount.toLocaleString()} has been sent for "${film.title}"`, type: 'payout' });
     res.json({ message: 'Payout marked as paid', film });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -671,11 +578,9 @@ app.post('/api/admin/payouts/:id/reject', auth, requireRole('admin'), async (req
   try {
     const film = await Film.findById(req.params.id);
     if (!film) return res.status(404).json({ message: 'Film not found' });
-
     film.payoutStatus = 'rejected';
     film.payoutRequested = false;
     await film.save();
-
     res.json({ message: 'Payout rejected', film });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -686,9 +591,7 @@ app.post('/api/admin/payouts/:id/reject', auth, requireRole('admin'), async (req
 
 app.get('/api/notifications', auth, async (req, res) => {
   try {
-    const notifications = await Notification.find({ user: req.user._id })
-      .sort({ createdAt: -1 })
-      .limit(50);
+    const notifications = await Notification.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(50);
     res.json(notifications);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -726,9 +629,7 @@ app.put('/api/notifications/read-all', auth, async (req, res) => {
 
 app.get('/api/watchlist', auth, async (req, res) => {
   try {
-    const items = await Watchlist.find({ user: req.user._id })
-      .populate('film')
-      .sort({ createdAt: -1 });
+    const items = await Watchlist.find({ user: req.user._id }).populate('film').sort({ createdAt: -1 });
     res.json(items);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -768,10 +669,10 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', dbConnected, timestamp: new Date().toISOString() });
 });
 
-// Error handler
+// Global error handler
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ message: 'Something went wrong!' });
+  console.error('GLOBAL ERROR:', err.stack);
+  res.status(500).json({ message: 'Something went wrong!', error: err.message });
 });
 
 const PORT = process.env.PORT || 5000;
