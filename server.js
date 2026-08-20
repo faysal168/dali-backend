@@ -5,10 +5,18 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
-const streamifier = require('streamifier');
+const { PassThrough } = require('stream');
 
 const app = express();
-app.use(cors());
+
+// CORS - allow Vercel frontend
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -19,13 +27,13 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// Multer - memory storage (we upload to Cloudinary manually)
+// Multer - memory storage
 const upload = multer({ 
   storage: multer.memoryStorage(),
-  limits: { fileSize: 500 * 1024 * 1024 } // 500MB limit
+  limits: { fileSize: 500 * 1024 * 1024 }
 });
 
-// Helper: upload buffer to Cloudinary
+// Helper: upload buffer to Cloudinary using built-in PassThrough
 const uploadToCloudinary = (buffer, folder, resourceType = 'auto') => {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
@@ -35,12 +43,14 @@ const uploadToCloudinary = (buffer, folder, resourceType = 'auto') => {
         resolve(result.secure_url);
       }
     );
-    streamifier.createReadStream(buffer).pipe(stream);
+    const passthrough = new PassThrough();
+    passthrough.pipe(stream);
+    passthrough.end(buffer);
   });
 };
 
 // MongoDB Connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/dali';
+const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/dali';
 let dbConnected = false;
 
 mongoose.connect(MONGODB_URI)
@@ -456,44 +466,43 @@ app.post('/api/admin/films/:id/publish', auth, requireRole('admin'), upload.fiel
   { name: 'video', maxCount: 1 }
 ]), async (req, res) => {
   try {
-    console.log('PUBLISH HIT for film:', req.params.id);
-    console.log('Files received:', req.files ? Object.keys(req.files) : 'none');
+    console.log('=== PUBLISH HIT ===');
+    console.log('Film ID:', req.params.id);
+    console.log('Files keys:', req.files ? Object.keys(req.files) : 'none');
+    console.log('Body:', req.body);
 
     const film = await Film.findById(req.params.id);
     if (!film) return res.status(404).json({ message: 'Film not found' });
 
     const updates = { status: 'approved', publishedAt: new Date() };
 
-    // Upload poster to Cloudinary
     if (req.files && req.files.poster && req.files.poster[0]) {
       try {
-        console.log('Uploading poster...');
+        console.log('Uploading poster, size:', req.files.poster[0].size);
         updates.poster = await uploadToCloudinary(req.files.poster[0].buffer, 'dali-films/posters', 'image');
-        console.log('Poster uploaded:', updates.poster);
+        console.log('Poster OK:', updates.poster);
       } catch (uploadErr) {
         console.error('Poster upload error:', uploadErr);
         return res.status(500).json({ message: 'Poster upload failed: ' + uploadErr.message });
       }
     }
 
-    // Upload trailer to Cloudinary
     if (req.files && req.files.trailer && req.files.trailer[0]) {
       try {
-        console.log('Uploading trailer...');
+        console.log('Uploading trailer, size:', req.files.trailer[0].size);
         updates.trailerUrl = await uploadToCloudinary(req.files.trailer[0].buffer, 'dali-films/trailers', 'video');
-        console.log('Trailer uploaded:', updates.trailerUrl);
+        console.log('Trailer OK:', updates.trailerUrl);
       } catch (uploadErr) {
         console.error('Trailer upload error:', uploadErr);
         return res.status(500).json({ message: 'Trailer upload failed: ' + uploadErr.message });
       }
     }
 
-    // Upload full film to Cloudinary
     if (req.files && req.files.video && req.files.video[0]) {
       try {
-        console.log('Uploading video...');
+        console.log('Uploading video, size:', req.files.video[0].size);
         updates.videoUrl = await uploadToCloudinary(req.files.video[0].buffer, 'dali-films/videos', 'video');
-        console.log('Video uploaded:', updates.videoUrl);
+        console.log('Video OK:', updates.videoUrl);
       } catch (uploadErr) {
         console.error('Video upload error:', uploadErr);
         return res.status(500).json({ message: 'Video upload failed: ' + uploadErr.message });
@@ -514,9 +523,10 @@ app.post('/api/admin/films/:id/publish', auth, requireRole('admin'), upload.fiel
       link: `/film/${film._id}`
     });
 
+    console.log('=== PUBLISH SUCCESS ===');
     res.json({ message: 'Film published successfully', film });
   } catch (err) {
-    console.error('PUBLISH ERROR:', err);
+    console.error('=== PUBLISH ERROR ===', err);
     res.status(500).json({ message: err.message });
   }
 });
