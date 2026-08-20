@@ -459,17 +459,16 @@ app.delete('/api/admin/films/:id', auth, requireRole('admin'), async (req, res) 
   }
 });
 
-// PUBLISH with manual Cloudinary upload
+// PUBLISH - poster/trailer uploaded to Cloudinary, video URL pasted by admin
 app.post('/api/admin/films/:id/publish', auth, requireRole('admin'), upload.fields([
   { name: 'poster', maxCount: 1 },
-  { name: 'trailer', maxCount: 1 },
-  { name: 'video', maxCount: 1 }
+  { name: 'trailer', maxCount: 1 }
 ]), async (req, res) => {
   try {
     console.log('=== PUBLISH HIT ===');
     console.log('Film ID:', req.params.id);
     console.log('Files keys:', req.files ? Object.keys(req.files) : 'none');
-    console.log('Body:', req.body);
+    console.log('Body videoUrl:', req.body.videoUrl);
 
     const film = await Film.findById(req.params.id);
     if (!film) return res.status(404).json({ message: 'Film not found' });
@@ -498,15 +497,10 @@ app.post('/api/admin/films/:id/publish', auth, requireRole('admin'), upload.fiel
       }
     }
 
-    if (req.files && req.files.video && req.files.video[0]) {
-      try {
-        console.log('Uploading video, size:', req.files.video[0].size);
-        updates.videoUrl = await uploadToCloudinary(req.files.video[0].buffer, 'dali-films/videos', 'video');
-        console.log('Video OK:', updates.videoUrl);
-      } catch (uploadErr) {
-        console.error('Video upload error:', uploadErr);
-        return res.status(500).json({ message: 'Video upload failed: ' + uploadErr.message });
-      }
+    // Video URL pasted by admin (uploaded directly to Cloudinary)
+    if (req.body.videoUrl) {
+      updates.videoUrl = req.body.videoUrl;
+      console.log('Video URL set:', updates.videoUrl);
     }
 
     if (req.body.adminNotes) updates.adminNotes = req.body.adminNotes;
