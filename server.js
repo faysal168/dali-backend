@@ -686,4 +686,10 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+// CRITICAL: Increase timeout for large file uploads to Cloudinary
+// Render kills connections after 100s by default - we need 5 minutes for videos
+server.timeout = 300000;           // 5 minutes
+server.keepAliveTimeout = 300000;  // 5 minutes
+server.headersTimeout = 300000;    // 5 minutes
